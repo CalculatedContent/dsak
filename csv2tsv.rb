@@ -2,11 +2,21 @@
 #
 # (c) 2014 Calculation Consulting <info@calculationconsulting.com>. All rights reserved.
 
+# TODO:
+#   - same thing as we do everyday Pinky, take over the world
+#   X implement regexp matching of the field names
+#   - option to strip Tabs from fields
+#   x support comma-separated -f
+#   - support for ranges in -f like 1..3 or 1.. or 1..-1
+#   X BUG: header_keep should print only the selected columns
+#   X FEATURE: 'fast' option that uses tokens instead of CSV parse (but beware of the caveats if some values have commas)
+
 require 'csv'
 require 'trollop'
+require 'json'
 
 opts = Trollop::options do
-  version "0.1"
+  version "0.2"
   banner <<-EOS
 Extract CSV fields from STDIN and outputs them in columns to a tab delimited file
 
@@ -18,18 +28,9 @@ Examples:
       cat myfile.csv | #{$0} -f "date,revenues"            # multiple columns (exact match) [same as previous example]
       cat myfile.csv | #{$0} -f "/revenue(s)?/"            # regexp match
       cat myfile.csv | #{$0} -f "date" -s ","              # output CSV instead of default Tab separated
-      cat myfile.csv | #{$0} -h                            # print the header (with AWK column numbers) and exit
+      cat myfile.csv | #{$0} -h                            # print the header (with 1-based AWK column numbers) and exit
 
-      cat myfile.csv| #{$0} -i   # ignore lines that are not CSV without crashing (uselful to skip malformed header)
-
-TODO:
-  - same thing as we do everyday Pinky, take over the world
-  X implement regexp matching of the field names
-  - option to strip Tabs from fields
-  x support comma-separated -f
-  x support for ranges in -f like 1..3 or 1.. or 1..-1
-  X BUG: header_keep should print only the selected columns
-  X FEATURE: 'fast' option that uses tokens instead of CSV parse (but beware of the caveats if some values have commas)
+      cat myfile.csv | #{$0} -i   # ignore lines that are not CSV without crashing (uselful to skip malformed header)
 
 Usage:
       #{$0} [options] < myfile.csv
@@ -40,9 +41,10 @@ EOS
   opt :ignore, "ignore non CSV lines (instead of crashing for CSV parse error)", :short => "-i",  :default => false
   opt :header_case_smart, "use smartcase to match header columns", :default => true
   opt :header_case_ignore, "ignore case to match header columns (takes precendence over smart case)", :default => false
-  opt :separator, "character separating the columns (when multiple fields are selected)", :default => ","
+  opt :separator, "character separating the columns (when multiple fields are selected)", :short => "-s", :default => ","
   # Output
-  opt :out_separator, "character separating the columns for the output", :short => "-o", :default => "\t"
+  opt :out_separator, "character separating the columns for the output (use 'json' to output json)", :short => "-o", :default => "\t"
+  opt :pretty, "outputs pretty json", :short => "-p", :default => false
   opt :fast, "when parsing CSV (separator is a comma), split line by tokens instead of using the CSV parser (faster but can lead to problems if the fields have commas in them)", :default => false
   opt :header_print, "print header as TSV and exit (index starts at 1 to be AWK friendly)", :short => "-h", :default => false
   opt :header_keep, "keep the header", :short => "-k", :default => true
@@ -92,14 +94,15 @@ def is_numeric?(obj)
     Float(obj) != nil rescue false
 end
 
-use_csv = false unless (opts[:separator] == ',' and !opts[:fast])
+use_csv = (opts[:separator] == ',' and !opts[:fast])
+output_json = opts[:out_separator].start_with?("json")
 
 $stdin.each do |line|
   line.strip!
 
   next if line.empty?
 
-  fields = []
+  fields = {}
   begin
     str = ''
     row = []
@@ -182,14 +185,26 @@ $stdin.each do |line|
       end
 
       if opts[:header_print] then
-        columns2index.keys.each_with_index do |key,index| puts "#{key}#{opts[:out_separator]}#{index+1}" end
+        columns2index_one_based = {}
+        columns2index.each do |k, v|
+          columns2index_one_based[k] = v+1
+        end
+
+        if output_json then
+          if opts[:pretty] then
+            puts JSON.pretty_generate columns2index_one_based
+          else
+            puts columns2index_one_based.to_json
+          end
+        else
+          columns2index_one_based.each do |key,index| puts "#{key}#{opts[:out_separator]}#{index}" end
+        end
+
         exit
       end
 
-      puts columns2index.keys.flatten.join(opts[:out_separator]) unless !opts[:header_keep] or columns2index.keys.size==0
-
-      next
-    end
+      next unless opts[:header_keep]
+    end # first line
 
     if opts[:debug] and header_found then
         if row_size > header_size then
@@ -200,11 +215,11 @@ $stdin.each do |line|
         end
     end
 
-    columns2index.values.each do |index|
+    columns2index.each do |column_name, index|
       value = row[index].to_s.strip
 
       value.downcase! unless !opts[:downcase]
-      fields.push(value)
+      fields[column_name] = value
     end
 
   rescue => e
@@ -214,5 +229,13 @@ $stdin.each do |line|
 
   next unless fields.size > 0
 
-  puts fields.flatten.join(opts[:out_separator])
+  if output_json then
+    if opts[:pretty] then
+      puts JSON.pretty_generate fields
+    else
+      puts fields.to_json
+    end
+  else
+    puts fields.values.flatten.join(opts[:out_separator])
+  end
 end
